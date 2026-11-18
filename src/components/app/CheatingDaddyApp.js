@@ -659,13 +659,6 @@ export class CheatingDaddyApp extends LitElement {
         }
     }
 
-    async handleGroqAPIKeyHelp() {
-        if (window.require) {
-            const { ipcRenderer } = window.require('electron');
-            await ipcRenderer.invoke('open-external', 'https://console.groq.com/keys');
-        }
-    }
-
     // ── Settings handlers ──
 
     async handleProfileChange(profile) {
@@ -890,7 +883,7 @@ export class CheatingDaddyApp extends LitElement {
         return html`
             <div class="sidebar ${this._isLiveMode() ? 'hidden' : ''}">
                 <div class="sidebar-brand">
-                    <h1>Cheating Daddy</h1>
+                    <h1>ET_ClientDashboard</h1>
                 </div>
                 <nav class="sidebar-nav">
                     ${items.map(
@@ -940,6 +933,7 @@ export class CheatingDaddyApp extends LitElement {
             presentation: 'Presentation',
             negotiation: 'Negotiation',
             exam: 'Exam',
+            casestudy: 'Case & Puzzle',
         };
 
         return html`

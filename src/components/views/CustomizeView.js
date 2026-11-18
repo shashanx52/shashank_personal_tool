@@ -216,7 +216,28 @@ export class CustomizeView extends LitElement {
         this.audioMode = 'speaker_only';
         this.customPrompt = '';
         this.theme = 'dark';
+        this.captureDisplayId = 'primary';
+        this._captureDisplays = [];
         this._loadFromStorage();
+        this._loadCaptureDisplays();
+    }
+
+    async _loadCaptureDisplays() {
+        if (!window.require) return;
+        try {
+            const { ipcRenderer } = window.require('electron');
+            const result = await ipcRenderer.invoke('get-capture-displays');
+            this._captureDisplays = result?.success ? result.data : [];
+            this.requestUpdate();
+        } catch (error) {
+            console.error('Error listing displays:', error);
+        }
+    }
+
+    async handleCaptureDisplaySelect(e) {
+        this.captureDisplayId = e.target.value;
+        await cheatingDaddy.storage.updatePreference('captureDisplayId', this.captureDisplayId);
+        this.requestUpdate();
     }
 
     getThemes() {
@@ -232,6 +253,7 @@ export class CustomizeView extends LitElement {
             this.audioMode = prefs.audioMode ?? 'speaker_only';
             this.customPrompt = prefs.customPrompt ?? '';
             this.theme = prefs.theme ?? 'dark';
+            this.captureDisplayId = prefs.captureDisplayId ?? 'primary';
             if (keybinds) {
                 this.keybinds = { ...this.getDefaultKeybinds(), ...keybinds };
             }
@@ -251,6 +273,7 @@ export class CustomizeView extends LitElement {
             { value: 'presentation', name: 'Presentation' },
             { value: 'negotiation', name: 'Negotiation' },
             { value: 'exam', name: 'Exam Assistant' },
+            { value: 'casestudy', name: 'Case, Guesstimate & Puzzle' },
         ];
     }
 
@@ -490,6 +513,7 @@ export class CustomizeView extends LitElement {
                 backgroundTransparency: 0.8,
                 googleSearchEnabled: false,
                 theme: 'dark',
+                captureDisplayId: 'primary',
             };
             for (const [key, value] of Object.entries(defaults)) {
                 await cheatingDaddy.storage.updatePreference(key, value);
@@ -513,6 +537,7 @@ export class CustomizeView extends LitElement {
             this.googleSearchEnabled = defaults.googleSearchEnabled;
             this.customPrompt = defaults.customPrompt;
             this.theme = defaults.theme;
+            this.captureDisplayId = defaults.captureDisplayId;
 
             // Notify parent callbacks
             this.onProfileChange(defaults.selectedProfile);
@@ -567,6 +592,31 @@ export class CustomizeView extends LitElement {
         }
     }
 
+    renderCaptureSection() {
+        const options = [
+            { value: 'primary', label: 'Primary display' },
+            { value: 'overlay', label: 'Display this app window is on' },
+            ...this._captureDisplays.map(display => ({ value: display.id, label: display.label })),
+        ];
+        return html`
+            <section class="surface">
+                <div class="surface-title">Screen Capture</div>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label class="form-label">Screen to capture for Analyze Screen</label>
+                        <select class="control" .value=${this.captureDisplayId} @change=${this.handleCaptureDisplaySelect}>
+                            ${options.map(option => html`<option value=${option.value} ?selected=${option.value === this.captureDisplayId}>${option.label}</option>`)}
+                        </select>
+                        <div class="form-hint" style="margin-top:6px;color:var(--text-muted);font-size:var(--font-size-xs);">
+                            Pick the monitor your call is on. "Display this app window is on" lets you choose by dragging the overlay onto that
+                            monitor. Takes effect the next time a session starts.
+                        </div>
+                    </div>
+                </div>
+            </section>
+        `;
+    }
+
     renderAudioSection() {
         return html`
             <section class="surface">
@@ -580,9 +630,13 @@ export class CustomizeView extends LitElement {
                             <option value="both">Both Speaker and Microphone</option>
                         </select>
                     </div>
-                    ${this.audioMode !== 'speaker_only' ? html`
-                        <div class="warning-callout">May cause unexpected behavior. Only change this if you know what you're doing.</div>
-                    ` : ''}
+                    ${
+                        this.audioMode !== 'speaker_only'
+                            ? html`
+                                  <div class="warning-callout">May cause unexpected behavior. Only change this if you know what you're doing.</div>
+                              `
+                            : ''
+                    }
                     <div class="form-group">
                         <label class="form-label">Image Quality</label>
                         <select class="control" .value=${this.selectedImageQuality} @change=${this.handleImageQualitySelect}>
@@ -662,20 +716,22 @@ export class CustomizeView extends LitElement {
         return html`
             <section class="surface">
                 <div class="surface-title">Keyboard Shortcuts</div>
-                ${this.getKeybindActions().map(action => html`
-                    <div class="keybind-row">
-                        <span class="keybind-name">${action.name}</span>
-                        <input
-                            type="text"
-                            class="control keybind-input"
-                            .value=${this.keybinds[action.key]}
-                            data-action=${action.key}
-                            @keydown=${this.handleKeybindInput}
-                            @focus=${this.handleKeybindFocus}
-                            readonly
-                        />
-                    </div>
-                `)}
+                ${this.getKeybindActions().map(
+                    action => html`
+                        <div class="keybind-row">
+                            <span class="keybind-name">${action.name}</span>
+                            <input
+                                type="text"
+                                class="control keybind-input"
+                                .value=${this.keybinds[action.key]}
+                                data-action=${action.key}
+                                @keydown=${this.handleKeybindInput}
+                                @focus=${this.handleKeybindFocus}
+                                readonly
+                            />
+                        </div>
+                    `
+                )}
                 <div style="margin-top: var(--space-sm);">
                     <button class="control" style="width:auto;padding:8px 10px;" @click=${this.resetKeybinds}>Reset to defaults</button>
                 </div>
@@ -695,9 +751,11 @@ export class CustomizeView extends LitElement {
                         ${this.isClearing ? 'Clearing...' : 'Delete all data'}
                     </button>
                 </div>
-                ${this.clearStatusMessage ? html`
-                    <div class="status ${this.clearStatusType === 'success' ? 'success' : 'error'}">${this.clearStatusMessage}</div>
-                ` : ''}
+                ${
+                    this.clearStatusMessage
+                        ? html` <div class="status ${this.clearStatusType === 'success' ? 'success' : 'error'}">${this.clearStatusMessage}</div> `
+                        : ''
+                }
             </section>
         `;
     }
@@ -707,11 +765,8 @@ export class CustomizeView extends LitElement {
             <div class="unified-page">
                 <div class="unified-wrap">
                     <div class="page-title">Settings</div>
-                    ${this.renderAudioSection()}
-                    ${this.renderLanguageSection()}
-                    ${this.renderAppearanceSection()}
-                    ${this.renderKeyboardSection()}
-                    ${this.renderPrivacySection()}
+                    ${this.renderCaptureSection()} ${this.renderAudioSection()} ${this.renderLanguageSection()} ${this.renderAppearanceSection()}
+                    ${this.renderKeyboardSection()} ${this.renderPrivacySection()}
                 </div>
             </div>
         `;

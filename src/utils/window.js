@@ -35,9 +35,20 @@ function createWindow(sendToRenderer, geminiSessionRef) {
     const { session, desktopCapturer } = require('electron');
     session.defaultSession.setDisplayMediaRequestHandler(
         (request, callback) => {
-            desktopCapturer.getSources({ types: ['screen'] }).then(sources => {
-                callback({ video: sources[0], audio: 'loopback' });
-            });
+            pickCaptureSource(mainWindow)
+                .then(source => {
+                    if (!source) {
+                        console.error('No screen sources available for capture');
+                        callback({});
+                        return;
+                    }
+                    console.log('Capturing screen source:', source.name, 'display_id:', source.display_id);
+                    callback({ video: source, audio: 'loopback' });
+                })
+                .catch(error => {
+                    console.error('Failed to pick capture source:', error);
+                    callback({});
+                });
         },
         { useSystemPicker: true }
     );
@@ -87,6 +98,55 @@ function createWindow(sendToRenderer, geminiSessionRef) {
     setupWindowIpcHandlers(mainWindow, sendToRenderer, geminiSessionRef);
 
     return mainWindow;
+}
+
+// Resolve which physical display to capture, based on the user's "captureDisplayId" preference:
+//   'primary'  -> the primary display (default, and the old hardcoded behaviour)
+//   'overlay'  -> the display the app window currently sits on (drag the overlay onto the call)
+//   <id>       -> a specific display id from screen.getAllDisplays()
+function resolveCaptureDisplay(mainWindow) {
+    let preference = 'primary';
+    try {
+        preference = storage.getPreferences().captureDisplayId || 'primary';
+    } catch (error) {
+        console.warn('Could not read captureDisplayId preference:', error.message);
+    }
+
+    if (preference === 'overlay' && mainWindow && !mainWindow.isDestroyed()) {
+        const [x, y] = mainWindow.getPosition();
+        const [width, height] = mainWindow.getSize();
+        return screen.getDisplayMatching({ x, y, width, height });
+    }
+
+    if (preference !== 'primary') {
+        const match = screen.getAllDisplays().find(display => String(display.id) === String(preference));
+        if (match) return match;
+        console.warn(`Capture display ${preference} not found, falling back to primary`);
+    }
+
+    return screen.getPrimaryDisplay();
+}
+
+async function pickCaptureSource(mainWindow) {
+    const { desktopCapturer } = require('electron');
+    const sources = await desktopCapturer.getSources({ types: ['screen'] });
+    if (!sources || sources.length === 0) return null;
+
+    const targetDisplay = resolveCaptureDisplay(mainWindow);
+    const match = sources.find(source => String(source.display_id) === String(targetDisplay.id));
+    if (match) return match;
+
+    console.warn('No capture source matched display', targetDisplay.id, '- using first source');
+    return sources[0];
+}
+
+function listCaptureDisplays() {
+    const primaryId = screen.getPrimaryDisplay().id;
+    return screen.getAllDisplays().map((display, index) => ({
+        id: String(display.id),
+        label: `Display ${index + 1}${display.id === primaryId ? ' (primary)' : ''} — ${display.size.width}×${display.size.height}`,
+        isPrimary: display.id === primaryId,
+    }));
 }
 
 function getDefaultKeybinds() {
@@ -314,11 +374,17 @@ function setupWindowIpcHandlers(mainWindow, sendToRenderer, geminiSessionRef) {
         }
     });
 
-    ipcMain.on('update-keybinds', (event, newKeybinds) => {
-        if (!mainWindow.isDestroyed()) {
-            updateGlobalShortcuts(newKeybinds, mainWindow, sendToRenderer, geminiSessionRef);
+    ipcMain.handle('get-capture-displays', async () => {
+        try {
+            return { success: true, data: listCaptureDisplays() };
+        } catch (error) {
+            console.error('Error listing displays:', error);
+            return { success: false, error: error.message };
         }
     });
+
+    // NOTE: 'update-keybinds' is handled once in src/index.js (it also persists the keybinds).
+    // A second handler here used to re-register every global shortcut twice.
 
     ipcMain.handle('toggle-window-visibility', async event => {
         try {

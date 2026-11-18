@@ -1,3 +1,7 @@
+# Local API key file (never commit)
+geminikey.env
+*.env
+
 # Logs
 src/data
 logs

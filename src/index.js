@@ -15,9 +15,64 @@ function createMainWindow() {
     return mainWindow;
 }
 
+// Import the Gemini API key from a local env file so it never has to be typed into the UI.
+// Looks for geminikey.env (then .env) in the project root. Accepted formats:
+//   GEMINI_API_KEY=AIza...      GOOGLE_API_KEY=AIza...      or just the bare key on a line
+function importApiKeyFromEnvFile() {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const candidates = ['geminikey.env', '.env'].map(name => path.join(app.getAppPath(), name));
+
+    for (const filePath of candidates) {
+        try {
+            if (!fs.existsSync(filePath)) continue;
+            const lines = fs.readFileSync(filePath, 'utf8').split(/\r?\n/);
+            for (const rawLine of lines) {
+                const line = rawLine.trim();
+                if (!line || line.startsWith('#')) continue;
+
+                let key = line;
+                const match = line.match(/^(?:export\s+)?(GEMINI_API_KEY|GOOGLE_API_KEY|API_KEY)\s*=\s*(.+)$/i);
+                if (match) {
+                    key = match[2].trim();
+                } else if (line.includes('=')) {
+                    continue; // some other variable, not a key
+                }
+                key = key.replace(/^["']|["']$/g, '').trim();
+                if (key.length < 20 || /your[_-]?key|paste/i.test(key)) continue;
+
+                if (storage.getApiKey() !== key) {
+                    storage.setApiKey(key);
+                    console.log(`Imported Gemini API key from ${path.basename(filePath)}`);
+                } else {
+                    console.log(`Gemini API key from ${path.basename(filePath)} already in use`);
+                }
+                return true;
+            }
+        } catch (error) {
+            console.warn(`Could not read ${filePath}:`, error.message);
+        }
+    }
+    return false;
+}
+
+// One running copy only: a second click on the desktop shortcut just brings the existing window back.
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+    app.quit();
+}
+app.on('second-instance', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.showInactive();
+    }
+});
+
 app.whenReady().then(async () => {
+    if (!hasSingleInstanceLock) return;
     // Initialize storage (checks version, resets if needed)
     storage.initializeStorage();
+    importApiKeyFromEnvFile();
 
     // Trigger screen recording permission prompt on macOS if not already granted
     if (process.platform === 'darwin') {
@@ -83,6 +138,7 @@ function setupStorageIpcHandlers() {
     // ============ CREDENTIALS ============
     ipcMain.handle('storage:get-credentials', async () => {
         try {
+            importApiKeyFromEnvFile();
             return { success: true, data: storage.getCredentials() };
         } catch (error) {
             console.error('Error getting credentials:', error);
@@ -102,6 +158,7 @@ function setupStorageIpcHandlers() {
 
     ipcMain.handle('storage:get-api-key', async () => {
         try {
+            importApiKeyFromEnvFile();
             return { success: true, data: storage.getApiKey() };
         } catch (error) {
             console.error('Error getting API key:', error);
@@ -115,25 +172,6 @@ function setupStorageIpcHandlers() {
             return { success: true };
         } catch (error) {
             console.error('Error setting API key:', error);
-            return { success: false, error: error.message };
-        }
-    });
-
-    ipcMain.handle('storage:get-groq-api-key', async () => {
-        try {
-            return { success: true, data: storage.getGroqApiKey() };
-        } catch (error) {
-            console.error('Error getting Groq API key:', error);
-            return { success: false, error: error.message };
-        }
-    });
-
-    ipcMain.handle('storage:set-groq-api-key', async (event, groqApiKey) => {
-        try {
-            storage.setGroqApiKey(groqApiKey);
-            return { success: true };
-        } catch (error) {
-            console.error('Error setting Groq API key:', error);
             return { success: false, error: error.message };
         }
     });

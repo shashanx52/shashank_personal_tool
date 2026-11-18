@@ -1,5 +1,30 @@
 import { html, css, LitElement } from '../../assets/lit-core-2.7.4.min.js';
 
+// Known-good Gemini model IDs (checked against Google's model list on 2026-11-13).
+// The Live model only listens; the answer model writes the responses you see.
+const GEMINI_LIVE_MODEL_PRESETS = [
+    { value: 'gemini-3.8-live', label: 'Gemini 3.8 Live (recommended)' },
+    { value: 'gemini-3.8-live-extended-thinking', label: 'Gemini 3.8 Live, extended thinking' },
+    { value: 'gemini-2.5-flash-native-audio-preview-12-2025', label: 'Gemini 2.5 Flash native audio (legacy)' },
+];
+
+const GEMINI_MODEL_PRESETS = [
+    { value: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash — mid tier, low token cost (recommended)' },
+    { value: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash-Lite — cheapest' },
+    { value: 'gemini-4-hydrogen', label: 'Gemini 4 Hydrogen — newest small model' },
+    { value: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash' },
+    { value: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro (preview) — highest quality, most tokens' },
+    { value: 'live', label: 'Let the Live model answer (spoken answer transcript)' },
+];
+
+const GEMINI_SCREEN_MODEL_PRESETS = [
+    { value: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro (preview) — best for code and documents (recommended)' },
+    { value: 'gemini-4-argon', label: 'Gemini 4 Argon' },
+    { value: 'gemini-4-carbon', label: 'Gemini 4 Carbon — largest' },
+    { value: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash — faster, cheaper' },
+    { value: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash-Lite — cheapest' },
+];
+
 const LOCAL_LLM_PRESETS = [
     { value: 'unsloth/Qwen3.5-0.8B-GGUF:Q4_K_M', label: 'Qwen 3.5 0.8B Q4 — 0.74 GB · Fastest' },
     { value: 'unsloth/Qwen3.5-0.8B-GGUF:Q8_0', label: 'Qwen 3.5 0.8B Q8 — 1.02 GB' },
@@ -696,12 +721,12 @@ export class MainView extends LitElement {
         _mode: { state: true },
         _token: { state: true },
         _geminiKey: { state: true },
-        _groqKey: { state: true },
-        _openaiKey: { state: true },
         _geminiLiveModel: { state: true },
-        _groqModel: { state: true },
-        _groqImageModel: { state: true },
-        _disableGroqThinking: { state: true },
+        _geminiModel: { state: true },
+        _geminiScreenModel: { state: true },
+        _useCustomLiveModel: { state: true },
+        _useCustomGeminiModel: { state: true },
+        _useCustomScreenModel: { state: true },
         _tokenError: { state: true },
         _keyError: { state: true },
         // Local AI state
@@ -725,12 +750,12 @@ export class MainView extends LitElement {
         this._mode = 'byok';
         this._token = '';
         this._geminiKey = '';
-        this._groqKey = '';
-        this._openaiKey = '';
-        this._geminiLiveModel = 'gemini-3.1-flash-live-preview';
-        this._groqModel = 'qwen/qwen3.6-27b';
-        this._groqImageModel = 'qwen/qwen3.6-27b';
-        this._disableGroqThinking = true;
+        this._geminiLiveModel = 'gemini-3.8-live';
+        this._geminiModel = 'gemini-3.8-flash';
+        this._geminiScreenModel = 'gemini-3.1-pro-preview';
+        this._useCustomLiveModel = false;
+        this._useCustomGeminiModel = false;
+        this._useCustomScreenModel = false;
         this._tokenError = false;
         this._keyError = false;
         this._showLocalHelp = false;
@@ -765,12 +790,12 @@ export class MainView extends LitElement {
             // Load keys
             this._token = creds.cloudToken || '';
             this._geminiKey = (await cheatingDaddy.storage.getApiKey().catch(() => '')) || '';
-            this._groqKey = (await cheatingDaddy.storage.getGroqApiKey().catch(() => '')) || '';
-            this._openaiKey = creds.openaiKey || '';
-            this._geminiLiveModel = config.geminiLiveModel || 'gemini-3.1-flash-live-preview';
-            this._groqModel = config.groqModel || 'qwen/qwen3.6-27b';
-            this._groqImageModel = config.groqImageModel || 'qwen/qwen3.6-27b';
-            this._disableGroqThinking = config.disableGroqThinking === true;
+            this._geminiLiveModel = config.geminiLiveModel || 'gemini-3.8-live';
+            this._geminiModel = config.geminiModel || 'gemini-3.8-flash';
+            this._geminiScreenModel = config.geminiScreenModel || 'gemini-3.1-pro-preview';
+            this._useCustomLiveModel = !GEMINI_LIVE_MODEL_PRESETS.some(preset => preset.value === this._geminiLiveModel);
+            this._useCustomGeminiModel = !GEMINI_MODEL_PRESETS.some(preset => preset.value === this._geminiModel);
+            this._useCustomScreenModel = !GEMINI_SCREEN_MODEL_PRESETS.some(preset => preset.value === this._geminiScreenModel);
 
             // Load local AI settings
             this._localLlmModel = prefs.localLlmModel || 'unsloth/Qwen3.5-4B-GGUF:Q4_K_M';
@@ -939,43 +964,73 @@ export class MainView extends LitElement {
         this.requestUpdate();
     }
 
-    async _saveGroqKey(val) {
-        this._groqKey = val;
-        await cheatingDaddy.storage.setGroqApiKey(val);
-        this.requestUpdate();
-    }
-
     async _saveGeminiLiveModel(val) {
         this._geminiLiveModel = val;
         await cheatingDaddy.storage.updateConfig('geminiLiveModel', val);
         this.requestUpdate();
     }
 
-    async _saveGroqModel(val) {
-        this._groqModel = val;
-        await cheatingDaddy.storage.updateConfig('groqModel', val);
+    async _selectGeminiLiveModel(value) {
+        if (value === 'custom') {
+            this._useCustomLiveModel = true;
+            this.requestUpdate();
+            return;
+        }
+        this._useCustomLiveModel = false;
+        await this._saveGeminiLiveModel(value);
+    }
+
+    async _saveGeminiModel(val) {
+        this._geminiModel = val;
+        await cheatingDaddy.storage.updateConfig('geminiModel', val);
         this.requestUpdate();
     }
 
-    async _saveGroqImageModel(val) {
-        this._groqImageModel = val;
-        await cheatingDaddy.storage.updateConfig('groqImageModel', val);
+    async _selectGeminiModel(value) {
+        if (value === 'custom') {
+            this._useCustomGeminiModel = true;
+            this.requestUpdate();
+            return;
+        }
+        this._useCustomGeminiModel = false;
+        await this._saveGeminiModel(value);
+    }
+
+    async _saveGeminiScreenModel(val) {
+        this._geminiScreenModel = val;
+        await cheatingDaddy.storage.updateConfig('geminiScreenModel', val);
         this.requestUpdate();
     }
 
-    async _saveDisableGroqThinking(disabled) {
-        this._disableGroqThinking = disabled;
-        await cheatingDaddy.storage.updateConfig('disableGroqThinking', disabled);
-        this.requestUpdate();
+    async _selectGeminiScreenModel(value) {
+        if (value === 'custom') {
+            this._useCustomScreenModel = true;
+            this.requestUpdate();
+            return;
+        }
+        this._useCustomScreenModel = false;
+        await this._saveGeminiScreenModel(value);
     }
 
-    async _saveOpenaiKey(val) {
-        this._openaiKey = val;
-        try {
-            const creds = await cheatingDaddy.storage.getCredentials().catch(() => ({}));
-            await cheatingDaddy.storage.setCredentials({ ...creds, openaiKey: val });
-        } catch (e) {}
-        this.requestUpdate();
+    // Dropdown of known-good model IDs with a "Custom" escape hatch that reveals a text input.
+    _renderModelPicker({ presets, value, useCustom, onSelect, onInput, placeholder }) {
+        return html`
+            <select class="model-select" .value=${useCustom ? 'custom' : value} @change=${event => onSelect(event.target.value)}>
+                ${presets.map(preset => html`<option value=${preset.value} ?selected=${!useCustom && preset.value === value}>${preset.label}</option>`)}
+                <option value="custom" ?selected=${useCustom}>Custom model ID…</option>
+            </select>
+            ${
+                useCustom
+                    ? html`<input
+                          type="text"
+                          style="margin-top:6px"
+                          placeholder=${placeholder}
+                          .value=${value}
+                          @input=${event => onInput(event.target.value)}
+                      />`
+                    : ''
+            }
+        `;
     }
 
     async _saveLocalLlmModel(val) {
@@ -1182,54 +1237,57 @@ export class MainView extends LitElement {
                     </div>
 
                     <div class="form-group">
-                        <label class="form-label">Gemini Live Model</label>
-                        <input type="text" .value=${this._geminiLiveModel} @input=${e => this._saveGeminiLiveModel(e.target.value)} />
+                        <label class="form-label">Gemini Live Model (listens to the call)</label>
+                        ${this._renderModelPicker({
+                            presets: GEMINI_LIVE_MODEL_PRESETS,
+                            value: this._geminiLiveModel,
+                            useCustom: this._useCustomLiveModel,
+                            onSelect: value => this._selectGeminiLiveModel(value),
+                            onInput: value => this._saveGeminiLiveModel(value),
+                            placeholder: 'e.g. gemini-3.8-live',
+                        })}
                     </div>
                 </div>
             </details>
 
-            <details class="config-section">
+            <details class="config-section" open>
                 <summary class="config-summary">
                     <span class="config-summary-text">
                         <span class="config-summary-title">AI responses</span>
-                        <span class="config-summary-description">Groq key and response model</span>
+                        <span class="config-summary-description">Which Gemini models write the answers</span>
                     </span>
                     ${this._renderConfigChevron()}
                 </summary>
                 <div class="config-content">
                     <div class="form-group">
-                        <label class="form-label">Groq API Key</label>
-                        <input type="password" placeholder="Optional" .value=${this._groqKey} @input=${e => this._saveGroqKey(e.target.value)} />
+                        <label class="form-label">Answer model (spoken questions and typed messages)</label>
+                        ${this._renderModelPicker({
+                            presets: GEMINI_MODEL_PRESETS,
+                            value: this._geminiModel,
+                            useCustom: this._useCustomGeminiModel,
+                            onSelect: value => this._selectGeminiModel(value),
+                            onInput: value => this._saveGeminiModel(value),
+                            placeholder: 'e.g. gemini-3.8-flash',
+                        })}
+                        <div class="form-hint">Mid-tier model: fast and cheap, good enough for conversational answers.</div>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Screen model (Analyze Screen)</label>
+                        ${this._renderModelPicker({
+                            presets: GEMINI_SCREEN_MODEL_PRESETS,
+                            value: this._geminiScreenModel,
+                            useCustom: this._useCustomScreenModel,
+                            onSelect: value => this._selectGeminiScreenModel(value),
+                            onInput: value => this._saveGeminiScreenModel(value),
+                            placeholder: 'e.g. gemini-3.1-pro-preview',
+                        })}
                         <div class="form-hint">
-                            <span class="link" @click=${() => this.onExternalLink('https://console.groq.com/keys')}>Get Groq key</span>
+                            Pro model: used only when you press Analyze Screen, where reading code and documents accurately matters most.
                         </div>
                     </div>
 
-                    <div class="form-group">
-                        <label class="form-label">Groq Model</label>
-                        <input type="text" .value=${this._groqModel} @input=${e => this._saveGroqModel(e.target.value)} />
-                    </div>
-
-                    <div class="form-group">
-                        <label class="form-label">Groq Image Model</label>
-                        <input type="text" .value=${this._groqImageModel} @input=${e => this._saveGroqImageModel(e.target.value)} />
-                    </div>
-
-                    <label class="config-checkbox">
-                        <input
-                            type="checkbox"
-                            .checked=${this._disableGroqThinking}
-                            @change=${e => this._saveDisableGroqThinking(e.target.checked)}
-                        />
-                        <span class="config-checkbox-text">
-                            <span class="config-summary-title">Disable thinking</span>
-                            <span class="config-summary-description">Faster responses with less internal reasoning</span>
-                        </span>
-                    </label>
-
-                    <div class="config-note">
-                        If the Groq API key is empty, Gemini Live is used for answers instead. Its answer quality may be lower.
-                    </div>
+                    <div class="config-note">Everything runs on your single Gemini API key. No other provider is contacted.</div>
                 </div>
             </details>
 
@@ -1335,11 +1393,11 @@ export class MainView extends LitElement {
                     this._mode === 'local'
                         ? html`
                               <div class="title-row">
-                                  <div class="page-title">Cheating Daddy <span class="mode-suffix">Local AI</span></div>
+                                  <div class="page-title">ET_ClientDashboard <span class="mode-suffix">Local AI</span></div>
                                   <button class="help-btn" @click=${this._openLocalHelp} aria-label="Open Local AI help">${helpIcon}</button>
                               </div>
                           `
-                        : html` <div class="page-title">${html`Cheating Daddy <span class="mode-suffix">BYOK</span>`}</div> `
+                        : html` <div class="page-title">${html`ET_ClientDashboard <span class="mode-suffix">Gemini</span>`}</div> `
                 }
                 <div class="page-subtitle">${this._mode === 'byok' ? 'Bring your own API keys' : 'Run models locally on your machine'}</div>
 

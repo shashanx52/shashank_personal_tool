@@ -5,19 +5,38 @@ const os = require('os');
 const CONFIG_VERSION = 1;
 
 // Default values
+// Live model: used only to listen (audio in -> transcript). Google retires
+// gemini-3.1-flash-live-preview on 2026-11-17; gemini-3.8-live is its replacement.
+const DEFAULT_GEMINI_LIVE_MODEL = 'gemini-3.8-live';
+// Answer model: used for spoken questions and typed messages (mid-tier, low token cost).
+const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
+// Screen model: used for Analyze Screen (Pro tier, best at reading code and documents from an image).
+const DEFAULT_GEMINI_SCREEN_MODEL = 'gemini-3.1-pro-preview';
+
+// Model IDs that Google has retired or is about to retire, mapped to their replacements.
+const LEGACY_MODEL_MAP = {
+    'gemini-3.1-flash-live-preview': DEFAULT_GEMINI_LIVE_MODEL,
+    'gemini-live-2.5-flash-preview': DEFAULT_GEMINI_LIVE_MODEL,
+    'gemini-2.0-flash-live-001': DEFAULT_GEMINI_LIVE_MODEL,
+    'gemini-2.5-flash': DEFAULT_GEMINI_MODEL,
+    'gemini-2.5-pro': DEFAULT_GEMINI_MODEL,
+    'gemini-3.5-flash': 'gemini-3.6-flash',
+    'gemini-3.7-flash': DEFAULT_GEMINI_MODEL,
+    'gemini-2.0-flash': 'gemini-3.6-flash',
+    'gemini-2.0-flash-lite': 'gemini-3.1-flash-lite',
+};
+
 const DEFAULT_CONFIG = {
     configVersion: CONFIG_VERSION,
     onboarded: false,
     layout: 'normal',
-    geminiLiveModel: 'gemini-3.1-flash-live-preview',
-    groqModel: 'qwen/qwen3.6-27b',
-    groqImageModel: 'qwen/qwen3.6-27b',
-    disableGroqThinking: true,
+    geminiLiveModel: DEFAULT_GEMINI_LIVE_MODEL,
+    geminiModel: DEFAULT_GEMINI_MODEL,
+    geminiScreenModel: DEFAULT_GEMINI_SCREEN_MODEL,
 };
 
 const DEFAULT_CREDENTIALS = {
     apiKey: '',
-    groqApiKey: '',
 };
 
 const DEFAULT_PREFERENCES = {
@@ -27,6 +46,8 @@ const DEFAULT_PREFERENCES = {
     selectedLanguage: 'en-US',
     selectedScreenshotInterval: '5',
     selectedImageQuality: 'medium',
+    // Which screen Analyze Screen captures: 'primary', 'overlay' (the display the app window is on), or a display id
+    captureDisplayId: 'primary',
     advancedMode: false,
     audioMode: 'speaker_only',
     fontSize: 'medium',
@@ -39,7 +60,7 @@ const DEFAULT_PREFERENCES = {
 const DEFAULT_KEYBINDS = null; // null means use system defaults
 
 const DEFAULT_LIMITS = {
-    data: [], // Array of { date: 'YYYY-MM-DD', flash: { count }, flashLite: { count }, groq: { 'qwen3-32b': { chars, limit }, 'gpt-oss-120b': { chars, limit }, 'gpt-oss-20b': { chars, limit } }, gemini: { 'gemma-4-26b-a4b-it': { chars } } }
+    data: [], // Array of { date: 'YYYY-MM-DD', flash: { count }, flashLite: { count } } - screen-analysis request counters per day
 };
 
 // Get the config directory path based on OS
@@ -166,7 +187,18 @@ function initializeStorage() {
 
 function getConfig() {
     const saved = readJsonFile(getConfigPath(), {});
-    return { ...DEFAULT_CONFIG, ...saved };
+    const config = { ...DEFAULT_CONFIG, ...saved };
+
+    // Transparently upgrade retired model IDs so old installs keep working.
+    for (const key of ['geminiLiveModel', 'geminiModel', 'geminiScreenModel']) {
+        if (!config[key] || !String(config[key]).trim()) {
+            config[key] = DEFAULT_CONFIG[key];
+        } else if (LEGACY_MODEL_MAP[config[key]]) {
+            config[key] = LEGACY_MODEL_MAP[config[key]];
+        }
+    }
+
+    return config;
 }
 
 function setConfig(config) {
@@ -199,14 +231,6 @@ function getApiKey() {
 
 function setApiKey(apiKey) {
     return setCredentials({ apiKey });
-}
-
-function getGroqApiKey() {
-    return getCredentials().groqApiKey || '';
-}
-
-function setGroqApiKey(groqApiKey) {
-    return setCredentials({ groqApiKey });
 }
 
 // ============ PREFERENCES ============
@@ -269,21 +293,8 @@ function getTodayLimits() {
     const todayEntry = limits.data.find(entry => entry.date === today);
 
     if (todayEntry) {
-        // ensure new fields exist
-        if (!todayEntry.groq) {
-            todayEntry.groq = {
-                'qwen3-32b': { chars: 0, limit: 1500000 },
-                'gpt-oss-120b': { chars: 0, limit: 600000 },
-                'gpt-oss-20b': { chars: 0, limit: 600000 },
-                'kimi-k2-instruct': { chars: 0, limit: 600000 },
-            };
-        }
-        if (!todayEntry.gemini) {
-            todayEntry.gemini = {
-                'gemma-4-26b-a4b-it': { chars: 0 },
-            };
-        }
-        setLimits(limits);
+        if (!todayEntry.flash) todayEntry.flash = { count: 0 };
+        if (!todayEntry.flashLite) todayEntry.flashLite = { count: 0 };
         return todayEntry;
     }
 
@@ -293,15 +304,6 @@ function getTodayLimits() {
         date: today,
         flash: { count: 0 },
         flashLite: { count: 0 },
-        groq: {
-            'qwen3-32b': { chars: 0, limit: 1500000 },
-            'gpt-oss-120b': { chars: 0, limit: 600000 },
-            'gpt-oss-20b': { chars: 0, limit: 600000 },
-            'kimi-k2-instruct': { chars: 0, limit: 600000 },
-        },
-        gemini: {
-            'gemma-4-26b-a4b-it': { chars: 0 },
-        },
     };
     limits.data.push(newEntry);
     setLimits(limits);
@@ -330,62 +332,28 @@ function incrementLimitCount(model) {
         limits.data = limits.data.filter(entry => entry.date === today);
     }
 
-    // Increment the appropriate model count
-    if (model === 'gemini-2.5-flash') {
-        todayEntry.flash.count++;
-    } else if (model === 'gemini-2.5-flash-lite') {
+    // Count every screen-analysis request against the "flash" bucket
+    if (!todayEntry.flash) todayEntry.flash = { count: 0 };
+    if (!todayEntry.flashLite) todayEntry.flashLite = { count: 0 };
+    if (model && model.includes('lite')) {
         todayEntry.flashLite.count++;
+    } else {
+        todayEntry.flash.count++;
     }
 
     setLimits(limits);
     return todayEntry;
 }
 
-function incrementCharUsage(provider, model, charCount) {
-    getTodayLimits();
-
-    const limits = getLimits();
-    const today = getTodayDateString();
-    const todayEntry = limits.data.find(entry => entry.date === today);
-
-    if (todayEntry[provider] && todayEntry[provider][model]) {
-        todayEntry[provider][model].chars += charCount;
-        setLimits(limits);
-    }
-
-    return todayEntry;
-}
-
+// The Gemini model used for spoken questions and typed text.
+// Previously this rotated between the retired 2.5 Flash models; now it is the user's configured model.
 function getAvailableModel() {
-    const todayLimits = getTodayLimits();
-
-    // RPD limits: flash = 20, flash-lite = 20
-    // After both exhausted, fall back to flash (for paid API users)
-    if (todayLimits.flash.count < 20) {
-        return 'gemini-2.5-flash';
-    } else if (todayLimits.flashLite.count < 20) {
-        return 'gemini-2.5-flash-lite';
-    }
-
-    return 'gemini-2.5-flash'; // Default to flash for paid API users
+    return getConfig().geminiModel || DEFAULT_GEMINI_MODEL;
 }
 
-function getModelForToday() {
-    const todayEntry = getTodayLimits();
-    const groq = todayEntry.groq;
-
-    if (groq['gpt-oss-120b'].chars < groq['gpt-oss-120b'].limit) {
-        return 'openai/gpt-oss-120b';
-    }
-    if (groq['gpt-oss-20b'].chars < groq['gpt-oss-20b'].limit) {
-        return 'openai/gpt-oss-20b';
-    }
-    if (groq['kimi-k2-instruct'].chars < groq['kimi-k2-instruct'].limit) {
-        return 'moonshotai/kimi-k2-instruct';
-    }
-
-    // All limits exhausted
-    return null;
+// The Gemini model used for Analyze Screen (image understanding).
+function getScreenModel() {
+    return getConfig().geminiScreenModel || DEFAULT_GEMINI_SCREEN_MODEL;
 }
 
 // ============ HISTORY ============
@@ -501,6 +469,11 @@ module.exports = {
     initializeStorage,
     getConfigDir,
 
+    // Model defaults
+    DEFAULT_GEMINI_LIVE_MODEL,
+    DEFAULT_GEMINI_MODEL,
+    DEFAULT_GEMINI_SCREEN_MODEL,
+
     // Config
     getConfig,
     setConfig,
@@ -511,8 +484,6 @@ module.exports = {
     setCredentials,
     getApiKey,
     setApiKey,
-    getGroqApiKey,
-    setGroqApiKey,
 
     // Preferences
     getPreferences,
@@ -529,8 +500,7 @@ module.exports = {
     getTodayLimits,
     incrementLimitCount,
     getAvailableModel,
-    incrementCharUsage,
-    getModelForToday,
+    getScreenModel,
 
     // History
     saveSession,

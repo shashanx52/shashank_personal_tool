@@ -49,13 +49,6 @@ const storage = {
     async setApiKey(apiKey) {
         return ipcRenderer.invoke('storage:set-api-key', apiKey);
     },
-    async getGroqApiKey() {
-        const result = await ipcRenderer.invoke('storage:get-groq-api-key');
-        return result.success ? result.data : '';
-    },
-    async setGroqApiKey(groqApiKey) {
-        return ipcRenderer.invoke('storage:set-groq-api-key', groqApiKey);
-    },
 
     // Preferences
     async getPreferences() {
@@ -201,6 +194,7 @@ ipcRenderer.on('update-status', (event, status) => {
 async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'medium') {
     // Store the image quality for manual screenshots
     currentImageQuality = imageQuality;
+    lastCaptureOptions = { screenshotIntervalSeconds, imageQuality };
 
     // Refresh preferences cache
     await loadPreferencesCache();
@@ -359,6 +353,16 @@ async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'mediu
             hasAudio: mediaStream.getAudioTracks().length > 0,
             videoTrack: mediaStream.getVideoTracks()[0]?.getSettings(),
         });
+
+        // If the OS or the user stops the capture (display change, "stop sharing"), say so
+        // instead of silently failing on the next screenshot.
+        const videoTrack = mediaStream.getVideoTracks()[0];
+        if (videoTrack) {
+            videoTrack.addEventListener('ended', () => {
+                console.warn('Screen capture track ended');
+                cheatingDaddy.setStatus('Screen capture stopped - it will be re-acquired on the next Analyze');
+            });
+        }
 
         // Manual mode only - screenshots captured on demand via shortcut
         console.log('Manual mode enabled - screenshots will be captured on demand only');
@@ -553,112 +557,224 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false) {
     );
 }
 
-const MANUAL_SCREENSHOT_PROMPT = `Help me on this page, give me the answer no bs, complete answer.
-So if its a code question, give me the approach in few bullet points, then the entire code. Also if theres anything else i need to know, tell me.
-If its a question about the website, give me the answer no bs, complete answer.
-If its a mcq question, give me the answer no bs, complete answer.`;
+const MANUAL_SCREENSHOT_PROMPT = `This is a screenshot of my screen during a live interview or call. Find the question, task or topic being shown and answer it directly and completely.
 
-async function captureManualScreenshot(imageQuality = null) {
-    console.log('Manual screenshot triggered');
-    const quality = imageQuality || currentImageQuality;
+Rules:
+- Start with the answer itself. No preamble, no "I see that...", no restating the screenshot.
+- Coding question: 2-4 bullet points on the approach, then the complete working code in a single code block (include the language), then time/space complexity in one line.
+- Multiple choice: state the correct option in bold first, then one sentence on why, and one short sentence on why the closest wrong option is wrong.
+- Conceptual or behavioural question: answer in 3-6 crisp sentences I can say out loud, in first person.
+- Guesstimate or market-sizing question: give the full working, not a summary: scope and units, approach, the complete assumption tree with every number and unit, step-by-step arithmetic, the final answer in bold with a range, a sanity check, and the assumption that moves the result most (10-18 short lines).
+- Case study (a business situation with data, e.g. metrics before and after a change): restate the objective in one line, list what the data shows with the key numbers computed (deltas, percentages, revenue = traffic x conversion x basket), give the most likely explanation and 2-3 alternatives to test, then an answer-first recommendation with next steps.
+- Logic puzzle or quantitative question: the final answer in bold first, then the reasoning in up to 8 short lines, then a "Check:" line verifying it by a second route.
+- If the screen shows a document, diagram or slide, summarise the key points as short bullets and point out anything I should be ready to discuss.
+- If the question is cut off or ambiguous, answer the most likely interpretation and note the assumption in one line.
+Style: plain everyday English, short sentences, first person, the way a confident person talks in an interview. Simple common words only: no "leverage", "utilize", "robust", "holistic", "comprehensive", "streamline", "stakeholders", "methodology". Say numbers the way people say them out loud ("about three million"). It must sound like me thinking out loud, not like a written report.
+Use markdown. Be concise but complete.`;
 
-    if (!mediaStream) {
-        console.error('No media stream available');
-        return;
+// ── Screenshot helpers ──
+
+// Remember how capture was started so a dead stream can be re-acquired without user action.
+let lastCaptureOptions = null;
+
+function isStreamAlive(stream) {
+    if (!stream) return false;
+    const track = stream.getVideoTracks()[0];
+    return !!track && track.readyState === 'live';
+}
+
+// Wait until the <video> has decoded at least one frame (readyState >= 2) or give up after timeoutMs.
+function waitForVideoReady(video, timeoutMs = 3000) {
+    if (video.readyState >= 2) return Promise.resolve(true);
+    return new Promise(resolve => {
+        const timer = setTimeout(() => resolve(video.readyState >= 2), timeoutMs);
+        video.addEventListener(
+            'loadeddata',
+            () => {
+                clearTimeout(timer);
+                resolve(true);
+            },
+            { once: true }
+        );
+    });
+}
+
+// Wait for the next *new* frame. The capture runs at 1 fps, so drawing immediately can grab
+// a frame up to a second old (or the very first, still-black, frame).
+function waitForFreshFrame(video, timeoutMs = 1500) {
+    return new Promise(resolve => {
+        let settled = false;
+        const finish = () => {
+            if (!settled) {
+                settled = true;
+                resolve();
+            }
+        };
+        if (typeof video.requestVideoFrameCallback === 'function') {
+            video.requestVideoFrameCallback(() => finish());
+        } else {
+            requestAnimationFrame(() => finish());
+        }
+        setTimeout(finish, timeoutMs);
+    });
+}
+
+// Sample a grid of pixels instead of a single corner pixel: a call window with a dark theme
+// has black corners but is not blank.
+function isCanvasBlank(context, width, height) {
+    const steps = 6;
+    for (let i = 1; i <= steps; i++) {
+        for (let j = 1; j <= steps; j++) {
+            const x = Math.floor((width * i) / (steps + 1));
+            const y = Math.floor((height * j) / (steps + 1));
+            const pixel = context.getImageData(x, y, 1, 1).data;
+            if (pixel[0] + pixel[1] + pixel[2] > 30) return false;
+        }
     }
+    return true;
+}
 
-    // Lazy init of video element
-    if (!hiddenVideo) {
+async function ensureHiddenVideo() {
+    if (!hiddenVideo || hiddenVideo.srcObject !== mediaStream) {
+        if (hiddenVideo) {
+            hiddenVideo.pause();
+            hiddenVideo.srcObject = null;
+        }
         hiddenVideo = document.createElement('video');
         hiddenVideo.srcObject = mediaStream;
         hiddenVideo.muted = true;
         hiddenVideo.playsInline = true;
-        await hiddenVideo.play();
+        try {
+            await hiddenVideo.play();
+        } catch (error) {
+            console.warn('Hidden video play() failed:', error.message);
+        }
+    }
 
-        await new Promise(resolve => {
-            if (hiddenVideo.readyState >= 2) return resolve();
-            hiddenVideo.onloadedmetadata = () => resolve();
+    if (!offscreenCanvas) {
+        offscreenCanvas = document.createElement('canvas');
+        offscreenContext = offscreenCanvas.getContext('2d', { willReadFrequently: true });
+    }
+
+    return waitForVideoReady(hiddenVideo);
+}
+
+function canvasToBase64(canvas, qualityValue) {
+    return new Promise(resolve => {
+        canvas.toBlob(
+            blob => {
+                if (!blob) return resolve(null);
+                const reader = new FileReader();
+                reader.onloadend = () => resolve(String(reader.result).split(',')[1] || null);
+                reader.onerror = () => resolve(null);
+                reader.readAsDataURL(blob);
+            },
+            'image/jpeg',
+            qualityValue
+        );
+    });
+}
+
+async function recoverMediaStream() {
+    if (!lastCaptureOptions) return false;
+    console.warn('Capture stream is not live - re-acquiring screen capture');
+    cheatingDaddy.setStatus('Re-acquiring screen...');
+    stopCapture();
+    await startCapture(lastCaptureOptions.screenshotIntervalSeconds, lastCaptureOptions.imageQuality);
+    return isStreamAlive(mediaStream);
+}
+
+// Grab the current screen, send it to the AI, and return { success, error }.
+// Every failure path now reports back instead of silently returning, so the UI never gets stuck.
+async function captureManualScreenshot(imageQuality = null) {
+    console.log('Manual screenshot triggered');
+    const quality = imageQuality || currentImageQuality;
+
+    const fail = error => {
+        console.error('Screenshot failed:', error);
+        cheatingDaddy.setStatus('Screenshot failed');
+        cheatingDaddy.addNewResponse(`**Screenshot failed:** ${error}`);
+        return { success: false, error };
+    };
+
+    try {
+        if (!isStreamAlive(mediaStream)) {
+            const recovered = await recoverMediaStream();
+            if (!recovered) {
+                return fail('Screen capture is not running. End the session and start it again.');
+            }
+        }
+
+        const ready = await ensureHiddenVideo();
+        if (!ready || hiddenVideo.videoWidth === 0) {
+            return fail('No video frames are arriving from the screen capture yet. Try again in a second.');
+        }
+
+        // Downscale to max 1280px wide for faster transfer — vision models don't need 4K
+        const MAX_WIDTH = 1280;
+        const srcW = hiddenVideo.videoWidth;
+        const srcH = hiddenVideo.videoHeight;
+        let destW = srcW;
+        let destH = srcH;
+        if (srcW > MAX_WIDTH) {
+            destW = MAX_WIDTH;
+            destH = Math.round(srcH * (MAX_WIDTH / srcW));
+        }
+        offscreenCanvas.width = destW;
+        offscreenCanvas.height = destH;
+
+        // Draw a fresh frame; if it comes out black, wait for the next one (up to 3 attempts).
+        let blank = true;
+        for (let attempt = 0; attempt < 3 && blank; attempt++) {
+            await waitForFreshFrame(hiddenVideo);
+            offscreenContext.drawImage(hiddenVideo, 0, 0, destW, destH);
+            blank = isCanvasBlank(offscreenContext, destW, destH);
+            if (blank) console.warn(`Screenshot attempt ${attempt + 1} is blank/black, retrying...`);
+        }
+        if (blank) {
+            return fail(
+                'The captured screen is completely black. The call window may be protected from capture, or the wrong display is selected in Settings → Screen Capture.'
+            );
+        }
+
+        let qualityValue;
+        switch (quality) {
+            case 'high':
+                qualityValue = 0.85;
+                break;
+            case 'medium':
+                qualityValue = 0.6;
+                break;
+            case 'low':
+                qualityValue = 0.4;
+                break;
+            default:
+                qualityValue = 0.6;
+        }
+
+        const base64data = await canvasToBase64(offscreenCanvas, qualityValue);
+        if (!base64data || base64data.length < 100) {
+            return fail('Could not encode the screenshot.');
+        }
+
+        console.log(`Sending image: ${destW}x${destH}, ~${Math.round(base64data.length / 1024)}KB`);
+
+        // Send image with prompt to HTTP API (response streams via IPC events)
+        const result = await ipcRenderer.invoke('send-image-content', {
+            data: base64data,
+            prompt: MANUAL_SCREENSHOT_PROMPT,
         });
 
-        // Lazy init of canvas based on video dimensions
-        offscreenCanvas = document.createElement('canvas');
-        offscreenCanvas.width = hiddenVideo.videoWidth;
-        offscreenCanvas.height = hiddenVideo.videoHeight;
-        offscreenContext = offscreenCanvas.getContext('2d');
+        if (result.success) {
+            console.log(`Image response completed from ${result.model}`);
+            // Response already displayed via streaming events (new-response/update-response)
+            return { success: true, model: result.model };
+        }
+
+        return fail(result.error || 'Unknown error from the AI provider');
+    } catch (error) {
+        return fail(error.message || String(error));
     }
-
-    // Check if video is ready
-    if (hiddenVideo.readyState < 2) {
-        console.warn('Video not ready yet, skipping screenshot');
-        return;
-    }
-
-    // Downscale to max 1280px wide for faster transfer — vision models don't need 4K
-    const MAX_WIDTH = 1280;
-    const srcW = hiddenVideo.videoWidth;
-    const srcH = hiddenVideo.videoHeight;
-    let destW = srcW;
-    let destH = srcH;
-    if (srcW > MAX_WIDTH) {
-        destW = MAX_WIDTH;
-        destH = Math.round(srcH * (MAX_WIDTH / srcW));
-    }
-    offscreenCanvas.width = destW;
-    offscreenCanvas.height = destH;
-    offscreenContext.drawImage(hiddenVideo, 0, 0, destW, destH);
-
-    let qualityValue;
-    switch (quality) {
-        case 'high':
-            qualityValue = 0.85;
-            break;
-        case 'medium':
-            qualityValue = 0.6;
-            break;
-        case 'low':
-            qualityValue = 0.4;
-            break;
-        default:
-            qualityValue = 0.6;
-    }
-
-    offscreenCanvas.toBlob(
-        async blob => {
-            if (!blob) {
-                console.error('Failed to create blob from canvas');
-                return;
-            }
-
-            const reader = new FileReader();
-            reader.onloadend = async () => {
-                const base64data = reader.result.split(',')[1];
-
-                if (!base64data || base64data.length < 100) {
-                    console.error('Invalid base64 data generated');
-                    return;
-                }
-
-                console.log(`Sending image: ${destW}x${destH}, ~${Math.round(base64data.length / 1024)}KB`);
-
-                // Send image with prompt to HTTP API (response streams via IPC events)
-                const result = await ipcRenderer.invoke('send-image-content', {
-                    data: base64data,
-                    prompt: MANUAL_SCREENSHOT_PROMPT,
-                });
-
-                if (result.success) {
-                    console.log(`Image response completed from ${result.model}`);
-                    // Response already displayed via streaming events (new-response/update-response)
-                } else {
-                    console.error('Failed to get image response:', result.error);
-                    cheatingDaddy.addNewResponse(`Error: ${result.error}`);
-                }
-            };
-            reader.readAsDataURL(blob);
-        },
-        'image/jpeg',
-        qualityValue
-    );
 }
 
 // Expose functions to global scope for external access

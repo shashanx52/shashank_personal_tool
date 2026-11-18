@@ -76,6 +76,7 @@ export class AICustomizeView extends LitElement {
             presentation: 'Presentation',
             negotiation: 'Negotiation',
             exam: 'Exam Assistant',
+            casestudy: 'Case, Guesstimate & Puzzle',
         };
         return names[profile] || profile;
     }
@@ -88,6 +89,7 @@ export class AICustomizeView extends LitElement {
             { value: 'presentation', label: 'Presentation' },
             { value: 'negotiation', label: 'Negotiation' },
             { value: 'exam', label: 'Exam Assistant' },
+            { value: 'casestudy', label: 'Case, Guesstimate & Puzzle' },
         ];
 
         return html`
@@ -117,7 +119,6 @@ export class AICustomizeView extends LitElement {
                             </div>
                         </div>
                     </section>
-
                 </div>
             </div>
         `;

@@ -1,6 +1,6 @@
 {
     "name": "cheating-daddy",
-    "productName": "cheating-daddy",
+    "productName": "ET_ClientDashboard",
     "version": "0.8.0",
     "description": "cheating daddy",
     "main": "src/index.js",
@@ -9,6 +9,10 @@
         "package": "electron-forge package",
         "make": "electron-forge make",
         "publish": "electron-forge publish",
+        "postinstall": "node scripts/setup-launcher.js",
+        "launcher": "node scripts/setup-launcher.js",
+        "check": "node scripts/check-gemini.js",
+        "accuracy": "node scripts/accuracy-test.js",
         "lint": "echo \"No linting configured\""
     },
     "keywords": [
