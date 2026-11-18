@@ -33,8 +33,8 @@ A real-time AI assistant that provides contextual help during video calls, inter
 2. Clone and install:
 
     ```
-    git clone https://github.com/shashanx52/ET_ClientDashboard.git
-    cd ET_ClientDashboard
+    git clone https://github.com/shashanx52/shashank_personal_tool.git
+    cd shashank_personal_tool
     npm install
     ```
 
