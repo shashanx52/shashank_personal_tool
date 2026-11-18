@@ -27,13 +27,25 @@ A real-time AI assistant that provides contextual help during video calls, inter
 - **Click-through Mode**: Make window transparent to clicks when needed
 - **Cross-platform**: Works on macOS, Windows, and Linux (kinda, dont use, just for testing rn)
 
-## Setup
+## Setup (Windows, about 5 minutes)
 
-1. **Get a Gemini API Key**: Visit [Google AI Studio](https://aistudio.google.com/apikey)
-2. **Install Dependencies**: `npm install`
-3. **Run the App**: `npm start`, or double-click the **ET_ClientDashboard** shortcut on the desktop (one click, no terminal; a second click brings the running app back instead of opening another copy)
+1. Install [Node.js](https://nodejs.org) (LTS) and [Git](https://git-scm.com) if you do not have them.
+2. Clone and install:
 
-The desktop shortcut points at `node_modules/electron/dist/ET_ClientDashboard.exe`, a renamed copy of the Electron runtime that `npm run launcher` (also run automatically after `npm install`) keeps in place. To recreate the shortcut on another PC: target that exe with argument `.`, "Start in" set to the project folder, icon `src/assets/ET_ClientDashboard.ico`.
+    ```
+    git clone https://github.com/shashanx52/ET_ClientDashboard.git
+    cd ET_ClientDashboard
+    npm install
+    ```
+
+3. Get a free Gemini API key at [Google AI Studio](https://aistudio.google.com/apikey).
+4. Copy `geminikey.env.example` to `geminikey.env` and paste your key after the `=` sign. This file is git-ignored, so the key stays on your PC. (You can also paste the key into the Home screen instead.)
+5. Check everything works without opening the app: `npm run check` (verifies the key and the three models).
+6. Run it: `npm start`.
+
+Optional one-click desktop shortcut: `npm install` already creates `node_modules\electron\dist\ET_ClientDashboard.exe` (a renamed copy of the Electron runtime). Right-click the desktop, New > Shortcut, target that exe followed by a space and a dot (`...\ET_ClientDashboard.exe .`), then in the shortcut's Properties set "Start in" to the project folder and the icon to `src\assets\ET_ClientDashboard.ico`. One click starts the app; a second click brings the running app back instead of opening another copy.
+
+Model notes: the free Gemini tier cannot use the Pro model. If `npm run check` reports a quota error for the screen model, pick Gemini 3.8 Flash as the Screen model on the Home screen (the app also falls back to it automatically for that request).
 
 Screen sharing: the window is created with content protection on, so Windows excludes it from screen capture (Zoom, Teams, Meet, OBS show nothing where it is). It is also hidden from the taskbar. It is still visible to your own eyes, to a phone camera pointed at the screen, and to a capture card or a second-PC capture.
 
